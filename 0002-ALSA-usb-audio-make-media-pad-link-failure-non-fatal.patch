@@ -1,0 +1,37 @@
+From: Stephen Brodie <author@example.com>
+Date: Thu, 1 May 2026
+Subject: [PATCH 2/2] ALSA: usb-audio: Make media pad link failure non-fatal in snd_media_stream_init
+
+On the Apogee ONEv2 (0c60:0017), media_create_pad_link() fails
+during snd_media_stream_init(). The existing code uses
+goto remove_intf_link on this failure, which tears down the
+entire PCM open sequence and prevents the playback PCM from
+opening at all.
+
+Changing goto remove_intf_link to continue makes the pad link
+failure non-fatal, allowing the PCM to open normally. This
+matches the intent of the surrounding loop which is designed
+to handle multiple entities — a single failed pad link should
+not prevent the others from being processed.
+
+Note: this patch causes the remove_intf_link label to be unused,
+producing a compiler warning. A follow-up cleanup patch could
+remove the label and its associated code if the goto is no longer
+reachable.
+
+Signed-off-by: Stephen Brodie <author@example.com>
+---
+ sound/usb/media.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sound/usb/media.c b/sound/usb/media.c
+index XXXXXXX..YYYYYYY 100644
+--- a/sound/usb/media.c
++++ b/sound/usb/media.c
+@@ -95,7 +95,7 @@ int snd_media_stream_init(struct snd_usb_substream *subs, struct snd_pcm *pcm,
+ 			ret = media_create_pad_link(entity, mixer_pad,
+ 						    &mctl->media_entity, 0,
+ 						    MEDIA_LNK_FL_ENABLED);
+ 			if (ret)
+-				goto remove_intf_link;
++				continue;

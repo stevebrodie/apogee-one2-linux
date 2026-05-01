@@ -1,0 +1,35 @@
+From: Stephen Brodie <author@example.com>
+Date: Thu, 1 May 2026
+Subject: [PATCH 1/2] ALSA: usb-audio: Return true for clock validity on query failure
+
+The Apogee ONEv2 (0c60:0017) requires a proprietary vendor init
+sequence before it can respond to UAC2 clock validity queries.
+Without this init sequence, the device returns an error to
+uac_clock_source_is_valid(), causing the kernel to reject the
+clock source and refuse to register the PCM devices entirely.
+
+Returning true when the clock validity query fails allows the
+device to enumerate normally. The device's clock becomes genuinely
+valid once the vendor init sequence is sent via userspace.
+
+This change affects only the error path where the device fails
+to respond to the clock validity control request. Devices that
+respond normally (success or explicit invalid) are unaffected.
+
+Signed-off-by: Stephen Brodie <author@example.com>
+---
+ sound/usb/clock.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sound/usb/clock.c b/sound/usb/clock.c
+index XXXXXXX..YYYYYYY 100644
+--- a/sound/usb/clock.c
++++ b/sound/usb/clock.c
+@@ -276,7 +276,7 @@ static bool uac_clock_source_is_valid(struct snd_usb_audio *chip,
+ 	if (err < 0) {
+ 		dev_warn(&dev->dev,
+ 			 "%s(): cannot get clock validity for id %d\n",
+ 			   __func__, source_id);
+-		return false;
++		return true;
+ 	}

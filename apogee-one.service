@@ -1,0 +1,12 @@
+[Unit]
+Description=Apogee ONEv2 Init and Keepalive
+After=sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/apogee-one-keepalive.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
