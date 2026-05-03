@@ -1,8 +1,8 @@
 # Apogee ONEv2 on Linux
 
-Reverse-engineered Linux support for the **Apogee ONEv2** USB audio interface (USB VID:PID `0c60:0017`).
+Ongoing reverse-engineering of Linux support for the **Apogee ONEv2** USB audio interface (USB VID:PID `0c60:0017`).
 
-This project documents everything needed to make the ONEv2 work on Linux, including two kernel patches, a keepalive daemon that solves the hardware watchdog disconnect, and the full vendor USB init sequence discovered via Wireshark packet capture on macOS.
+This project documents work to bring the ONEv2 up on Linux. Two kernel bugs have been identified and patched, the hardware watchdog has been solved, and the playback PCM now opens without error — but stable audio output has not yet been confirmed. The work is at an advanced stage and contributions are welcome.
 
 **Nothing here existed before this project. All of it was built from scratch.**
 
@@ -11,13 +11,13 @@ This project documents everything needed to make the ONEv2 work on Linux, includ
 ## Current Status
 
 | Feature | Status |
-|---------|--------|
+| --- | --- |
 | Device enumerates on USB | ✅ Working |
 | ALSA sees both Playback and Capture PCMs | ✅ Working |
 | Capture (recording) | ✅ Working |
 | Hardware watchdog keepalive | ✅ Working (9,000+ cycles verified) |
-| Playback PCM opens | ✅ Working (stream starts) |
-| Stable playback audio | ⚠️ Stream fails mid-play — investigation ongoing |
+| Playback PCM opens | ✅ PCM open succeeds (no "Invalid argument") |
+| Stable playback audio | ⚠️ Stream fails immediately after opening — no audio confirmed yet |
 | WirePlumber/PipeWire Sink | ⚠️ Not yet confirmed |
 
 ---
@@ -27,16 +27,19 @@ This project documents everything needed to make the ONEv2 work on Linux, includ
 The Apogee ONEv2 is a UAC2 USB audio interface with two significant Linux incompatibilities:
 
 ### Problem 1: UAC2 Clock Validity
+
 The Linux UAC2 driver queries the device for clock source validity before allowing enumeration. The ONEv2 returns an error to this query (it requires a proprietary vendor init sequence first), causing Linux to reject the clock source and refuse to register the PCM devices.
 
 **Fix:** A one-line patch to `sound/usb/clock.c` that returns `true` (assume clock is valid) when the device fails to respond to clock validity queries, instead of `false` (which causes enumeration to fail).
 
 ### Problem 2: Media Controller Pad Link Crash
+
 When the playback PCM is opened, `snd_media_stream_init()` in `sound/usb/media.c` calls `media_create_pad_link()`. On this device this call fails, and the original code uses `goto remove_intf_link` which causes the PCM open to fail entirely.
 
 **Fix:** A one-line patch that changes `goto remove_intf_link` to `continue`, making the failed pad link non-fatal.
 
 ### Problem 3: Hardware Watchdog
+
 The ONEv2 has a hardware watchdog that disconnects the device from USB approximately every 9 seconds unless the host sends a specific vendor USB control command (`0x29`) to reset it. Additionally, the device requires a proprietary vendor init sequence (discovered via Wireshark USB capture on macOS) before the clock becomes valid and audio can flow.
 
 **Fix:** A Python keepalive daemon that sends the vendor init sequence on startup and resets the watchdog every 4 seconds from a background thread, so audio playback is not interrupted.
@@ -45,11 +48,11 @@ The ONEv2 has a hardware watchdog that disconnects the device from USB approxima
 
 ## What You Need
 
-- Linux system with kernel 6.x (tested on 6.14 and 6.17)
-- Kernel headers for your running kernel
-- Kernel source tree matching your running kernel
-- `python3-usb` package
-- `zstd` package
+* Linux system with kernel 6.x (tested on 6.14 and 6.17)
+* Kernel headers for your running kernel
+* Kernel source tree matching your running kernel
+* `python3-usb` package
+* `zstd` package
 
 ---
 
@@ -57,7 +60,7 @@ The ONEv2 has a hardware watchdog that disconnects the device from USB approxima
 
 ### Patch 1: `sound/usb/clock.c`
 
-```diff
+```
 --- a/sound/usb/clock.c
 +++ b/sound/usb/clock.c
 @@ -276,7 +276,7 @@ static bool uac_clock_source_is_valid(struct snd_usb_audio *chip,
@@ -76,7 +79,7 @@ The ONEv2 has a hardware watchdog that disconnects the device from USB approxima
 
 ### Patch 2: `sound/usb/media.c`
 
-```diff
+```
 --- a/sound/usb/media.c
 +++ b/sound/usb/media.c
 @@ -95,7 +95,7 @@ int snd_media_stream_init(struct snd_usb_substream *subs, struct snd_pcm *pcm,
@@ -100,7 +103,7 @@ The ONEv2 has a hardware watchdog that disconnects the device from USB approxima
 
 ### Step 1: Get kernel source
 
-```bash
+```
 # Enable deb-src in /etc/apt/sources.list, then:
 sudo apt update
 cd ~
@@ -109,25 +112,28 @@ apt-get source linux-hwe-$(uname -r | cut -d'.' -f1,2)
 
 ### Step 2: Copy Module.symvers from installed headers
 
-```bash
+```
 cp /usr/src/linux-headers-$(uname -r)/Module.symvers ~/linux-hwe-*/Module.symvers
 ```
 
 ### Step 3: Apply both patches
 
 Find the exact line numbers in your source tree:
-```bash
+
+```
 grep -n "return false" ~/linux-hwe-*/sound/usb/clock.c
 grep -n "goto remove_intf_link" ~/linux-hwe-*/sound/usb/media.c
 ```
 
 Apply clock.c patch (replace NN with the line number found above):
-```bash
+
+```
 sed -i 'NNs/\t\treturn false;/\t\treturn true;/' ~/linux-hwe-*/sound/usb/clock.c
 ```
 
 Apply media.c patch:
-```bash
+
+```
 sed -i 's/\t\t\t\tgoto remove_intf_link;/\t\t\t\tcontinue;/' ~/linux-hwe-*/sound/usb/media.c
 ```
 
@@ -135,7 +141,7 @@ sed -i 's/\t\t\t\tgoto remove_intf_link;/\t\t\t\tcontinue;/' ~/linux-hwe-*/sound
 
 **Critical:** Use the exact compiler that built your running kernel. Check with `cat /proc/version`. On Ubuntu/Zorin this is typically `x86_64-linux-gnu-gcc-13`.
 
-```bash
+```
 touch ~/linux-hwe-*/sound/usb/*.c
 
 make -C /usr/src/linux-headers-$(uname -r) \
@@ -150,7 +156,7 @@ You should see a full wall of `CC [M]` lines. If make exits immediately with no 
 
 **Do NOT use `make modules_install`** — it installs to `/updates/` which takes load priority and can cause symbol version mismatches.
 
-```bash
+```
 KVER=$(uname -r)
 SOURCE=~/linux-hwe-*/sound/usb
 DEST=/lib/modules/$KVER/kernel/sound/usb
@@ -160,9 +166,9 @@ sudo zstd -f $SOURCE/snd-usbmidi-lib.ko -o $DEST/snd-usbmidi-lib.ko.zst
 sudo depmod -a
 ```
 
-### Step 6: Set ignore_ctl_error permanently
+### Step 6: Set ignore\_ctl\_error permanently
 
-```bash
+```
 echo "options snd_usb_audio ignore_ctl_error=1" | sudo tee /etc/modprobe.d/apogee-one.conf
 ```
 
@@ -180,7 +186,7 @@ Without the keepalive, the device disconnects from USB every ~9 seconds.
 
 ### Installation
 
-```bash
+```
 sudo apt install python3-usb
 
 sudo cp apogee-one-keepalive.py /usr/local/bin/
@@ -190,18 +196,20 @@ sudo systemctl daemon-reload
 ```
 
 **Test manually first before enabling as a boot service:**
-```bash
+
+```
 sudo python3 /usr/local/bin/apogee-one-keepalive.py
 ```
 
 Wait for "Device ready for keepalive" and confirm the heartbeat runs. Then:
-```bash
+
+```
 sudo systemctl enable --now apogee-one
 ```
 
 ### Service file (`apogee-one.service`)
 
-```ini
+```
 [Unit]
 Description=Apogee ONEv2 Init and Keepalive
 After=sound.target
@@ -224,7 +232,7 @@ Without this config, WirePlumber repeatedly attempts to use the ALSA Control Pro
 
 Create `~/.config/wireplumber/main.lua.d/50-apogee-one.lua`:
 
-```lua
+```
 rule = {
   matches = {
     {
@@ -245,7 +253,7 @@ table.insert(alsa_monitor.rules, rule)
 
 ## How the Vendor Init Sequence Was Discovered
 
-The init sequence was reverse-engineered by capturing USB traffic with Wireshark on macOS while the Apogee Maestro app initialised the device. The capture was filtered for `URB_CONTROL` vendor-type transfers to/from the device address, and the sequence of `bRequest` values and payloads was extracted.
+The init sequence was reverse-engineered by capturing USB traffic with Wireshark on macOS while the Apogee Control2 app initialised the device. The capture was filtered for `URB_CONTROL` vendor-type transfers to/from the device address, and the sequence of `bRequest` values and payloads was extracted.
 
 The watchdog command (`0x29`) was isolated by binary search — testing subsets of the init sequence as the heartbeat until the single command that prevented the 9-second disconnect was identified.
 
@@ -253,9 +261,9 @@ The watchdog command (`0x29`) was isolated by binary search — testing subsets 
 
 ## Known Issues and Open Questions
 
-- **Playback stream fails mid-play** — the PCM opens successfully and audio begins, but the stream drops with "File descriptor in bad state" or "No such device". Root cause not yet confirmed. May be related to USB address reassignment when `wait_for_device()` re-unbinds the device after modprobe.
-- **The `.zst.bak` backup is not the original stock module** — if you need to restore the stock module, use `sudo apt install --reinstall linux-modules-extra-$(uname -r)`
-- **Both modules must come from the same build** — `snd_usb_audio` and `snd_usbmidi_lib` must be loaded from the same compiled tree. Mixing stock and custom versions causes symbol CRC mismatches.
+* **Playback PCM opens but no audio has been confirmed.** The `media.c` patch fixes the crash that previously prevented the PCM from opening at all — `aplay` and `speaker-test` no longer return "Invalid argument". However, the stream fails immediately after opening with "File descriptor in bad state" or "No such device or address". The `speaker-test` tool prints channel names ("Front Left / Front Right") before any audio data flows, so that output is not evidence of audio reaching the hardware. No audible output has been confirmed. Root cause is under investigation — likely related to USB address reassignment when `wait_for_device()` re-unbinds the device after modprobe.
+* **The `.zst.bak` backup is not the original stock module** — if you need to restore the stock module, use `sudo apt install --reinstall linux-modules-extra-$(uname -r)`
+* **Both modules must come from the same build** — `snd_usb_audio` and `snd_usbmidi_lib` must be loaded from the same compiled tree. Mixing stock and custom versions causes symbol CRC mismatches.
 
 ---
 
@@ -269,15 +277,15 @@ The vendor init sequence and watchdog command could potentially be added as a qu
 
 ## Related Projects
 
-- [take_control](https://github.com/stefanocoding/take_control) — Python control script for the Apogee Duet USB (VID `0c60:0016`), which shares the same vendor command architecture as the ONEv2
-- The ALSA USB audio driver source: `sound/usb/` in the Linux kernel tree
+* [take\_control](https://github.com/stefanocoding/take_control) — Python control script for the Apogee Duet USB (VID `0c60:0016`), which shares the same vendor command architecture as the ONEv2
+* The ALSA USB audio driver source: `sound/usb/` in the Linux kernel tree
 
 ---
 
 ## Hardware
 
 Tested on:
-- **Device:** Apogee ONEv2 (USB VID:PID `0c60:0017`, bcdDevice 1.05)
-- **System:** ThinkPad T410, Intel Core i5 M520
-- **OS:** Zorin OS 18 (Ubuntu 24.04 base), kernel 6.14.0-36-generic
-- **Also tested:** Linux Mint (kernel 6.17.0-22-generic) — module build issues encountered due to compiler mismatch; Zorin recommended
+
+* **Device:** Apogee ONEv2 (USB VID:PID `0c60:0017`, bcdDevice 1.05)
+* **System:** ThinkPad T410, Intel Core i5 M520
+* **OS:** Linux Mint (kernel 6.17.0-22-generic) — primary development system. The kernel accumulated state issues during development due to repeated failed build attempts, not a fundamental distribution incompatibility. Results are expected to be similar across distributions.
